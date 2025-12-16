@@ -1,0 +1,62 @@
+1. Traffic Differentiation
+Interpretation
+
+Create two traffic classes:
+	• Class 1 (VoIP-like) → small, frequent packets
+	• Class 2 (FTP-like) → large, bursty packets
+
+ Explanation 
+
+This exercise focuses on Quality of Service (QoS) in a WAN network. The goal is to manage different types of traffic so that important traffic (such as voice or video) is treated with higher priority than less critical traffic (such as file downloads).
+
+In this exercise, the network carries multiple traffic types at the same time. Without QoS, all packets are treated equally, which can cause delays and packet loss for time-sensitive applications during congestion. By introducing QoS mechanisms, the network is configured to prioritize delay-sensitive traffic, ensuring smoother communication and better performance.
+
+This exercise highlights how QoS helps maintain service quality during heavy network usage and why traffic classification and prioritization are essential in real-world networks.
+
+Code:
+echoClientVoip.SetAttribute("PacketSize", UintegerValue(160));
+echoClientVoip.SetAttribute("Interval", TimeValue(MilliSeconds(20)));
+echoClientData.SetAttribute("PacketSize", UintegerValue(1500));
+echoClientData.SetAttribute("Interval", TimeValue(MilliSeconds(5)));
+
+2. Queue Management
+Interpretation
+
+Prioritize VoIP traffic using priority queueing.
+
+Code:
+
+TrafficControlHelper tch;
+tch.SetRootQueueDisc("ns3::PriorityQueueDisc");
+tch.Install(devices);
+
+3. Performance Measurement
+Metrics:
+  • Delay
+  • Jitter
+  • Packet loss
+  • Throughput
+
+Tool:
+FlowMonitorHelper fm;
+fm.InstallAll();
+
+4. Congestion Scenario
+Interpretation:
+
+Create congestion by sending traffic above 5 Mbps.
+
+Code :
+onoff.SetAttribute("DataRate", StringValue("20Mbps"));
+
+Expected Result:
+	• Without QoS → VoIP delay increases
+	• With QoS → VoIP remains stable
+
+5. Real-World QoS Gap
+Hard to simulate accurately:
+	• Hardware shaping
+	• Deep packet inspection
+	• ASIC-based scheduling
+
+Approximation: queue disciplines + FlowMonitor.

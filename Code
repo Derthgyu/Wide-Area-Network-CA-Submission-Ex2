@@ -1,0 +1,234 @@
+#include "ns3/applications-module.h"
+#include "ns3/core-module.h"
+#include "ns3/flow-monitor-module.h"
+#include "ns3/internet-module.h"
+#include "ns3/mobility-module.h"
+#include "ns3/netanim-module.h"
+#include "ns3/network-module.h"
+#include "ns3/point-to-point-module.h"
+#include "ns3/traffic-control-module.h"
+#include "ns3/qos-module.h" // Needed for QosTag/TrafficControl
+
+using namespace ns3;
+
+NS_LOG_COMPONENT_DEFINE("QoSWANSimulation");
+
+// --- Fonction pour afficher les résultats de FlowMonitor (Question 3) ---
+void
+FlowMonitorAnalysis(Ptr<FlowMonitor> flowMonitor, Ptr<Ipv4FlowClassifier> classifier)
+{
+    double totalDelayVoIP = 0.0;
+    double totalDelayData = 0.0;
+    uint32_t packetsVoIP = 0;
+    uint32_t packetsData = 0;
+    uint32_t droppedVoIP = 0;
+    uint32_t droppedData = 0;
+
+    // Récupérer les statistiques de FlowMonitor
+    std::map<FlowId, FlowMonitor::FlowStats> stats = flowMonitor->Get
+    stats();
+
+    std::cout << "\n\n=== RÉSULTATS DE L'ANALYSE QoS (FlowMonitor) ===\n";
+
+    for (std::map<FlowId, FlowMonitor::FlowStats>::const_iterator i = stats.begin(); i != stats.end(); ++i)
+    {
+        Ipv4FlowClassifier::FiveTuple t = classifier->FindFlow(i->first);
+
+        // Déterminer la classe de trafic par le port (9 pour VoIP, 10 pour Data)
+        std::string trafficClass = (t.destinationPort == 9) ? "VoIP (Class 1)" : "Data (Class 2)";
+
+        // Calculer les métriques
+        double avgDelay = i->second.delaySum.GetSeconds() / i->second.rxPackets;
+        double packetLoss = (double)i->second.lostPackets / (double)i->second.txPackets * 100.0;
+        double throughput = i->second.rxBytes * 8.0 / (i->second.timeLastRxPacket.GetSeconds() - i->second.timeFirstTxPacket.GetSeconds()) / 1000000.0;
+
+        std::cout << "\n--- Flow " << i->first << " (" << trafficClass << ") ---\n";
+        std::cout << "  Source Port: " << t.sourcePort << ", Dest Port: " << t.destinationPort << "\n";
+        std::cout << "  Packets Transmis: " << i->second.txPackets << "\n";
+        std::cout << "  Paquets Perdus (Queue): " << i->second.lostPackets << " (" << std::fixed << std::setprecision(2) << packetLoss << " %)\n";
+        std::cout << "  Débit (Mbps): " << std::fixed << std::setprecision(3) << throughput << "\n";
+        std::cout << "  Latence Moyenne (s): " << std::fixed << std::setprecision(6) << avgDelay << "\n";
+
+        // Collecter les totaux pour la comparaison
+        if (t.destinationPort == 9) // VoIP
+        {
+            totalDelayVoIP += i->second.delaySum.GetSeconds();
+            packetsVoIP += i->second.rxPackets;
+            droppedVoIP += i->second.lostPackets;
+        }
+        else // Data
+        {
+            totalDelayData += i->second.delaySum.GetSeconds();
+            packetsData += i->second.rxPackets;
+            droppedData += i->second.lostPackets;
+        }
+    }
+
+    // Affichage comparatif (Question 3)
+    std::cout << "\n\n=== COMPARAISON DES PERFORMANCES QoS ===\n";
+    std::cout << std::left << std::setw(20) << "Classe de Trafic" << std::setw(15) << "Latence Avg (s)" << std::setw(15) << "Paquets Perdus\n";
+    std::cout << "---------------------------------------------------------\n";
+
+    if (packetsVoIP > 0)
+    {
+        std::cout << std::left << std::setw(20) << "VoIP (Class 1)" << std::setw(15) << std::fixed << std::setprecision(6) << totalDelayVoIP / packetsVoIP << std::setw(15) << droppedVoIP << "\n";
+    }
+    if (packetsData > 0)
+    {
+        std::cout << std::left << std::setw(20) << "Data (Class 2)" << std::setw(15) << std::fixed << std::setprecision(6) << totalDelayData / packetsData << std::setw(15) << droppedData << "\n";
+    }
+
+    std::cout << "=========================================================\n";
+}
+// -----------------------------------------------------------------
+
+int
+main(int argc, char* argv[])
+{
+    // Augmenter la verbosité pour les composants pertinents
+    LogComponentEnable("QoSWANSimulation", LOG_LEVEL_INFO);
+    LogComponentEnable("OnOffApplication", LOG_LEVEL_INFO);
+    LogComponentEnable("FlowMonitor", LOG_LEVEL_INFO);
+
+    // 1. Configuration de la topologie linéaire (identique à l'original)
+    NodeContainer nodes;
+    nodes.Create(3);
+    Ptr<Node> n0 = nodes.Get(0); // HQ (Client)
+    Ptr<Node> n1 = nodes.Get(1); // Branch (Router)
+    Ptr<Node> n2 = nodes.Get(2); // DC (Server)
+
+    // Configuration des liens Point-to-Point
+    PointToPointHelper p2p;
+    p2p.SetChannelAttribute("Delay", StringValue("2ms"));
+
+    // Lien 1: n0 <-> n1 (HQ-Branch) - 10Mbps (pas le goulot)
+    p2p.SetDeviceAttribute("DataRate", StringValue("10Mbps"));
+    NodeContainer link1Nodes(n0, n1);
+    NetDeviceContainer link1Devices = p2p.Install(link1Nodes);
+
+    // Lien 2: n1 <-> n2 (Branch-DC/WAN) - Débit réduit pour CAUSER CONGESTION (Question 4)
+    p2p.SetDeviceAttribute("DataRate", StringValue("1Mbps"));
+    NodeContainer link2Nodes(n1, n2);
+    NetDeviceContainer link2Devices = p2p.Install(link2Nodes);
+
+    // Installation de la pile Internet et des adresses IP
+    InternetStackHelper stack;
+    stack.Install(nodes);
+
+    Ipv4AddressHelper address;
+    address.SetBase("10.1.1.0", "255.255.255.0");
+    Ipv4InterfaceContainer interfaces1 = address.Assign(link1Devices); // 10.1.1.1(n0), 10.1.1.2(n1)
+
+    address.SetBase("10.1.2.0", "255.255.255.0");
+    Ipv4InterfaceContainer interfaces2 = address.Assign(link2Devices); // 10.1.2.1(n1), 10.1.2.2(n2)
+
+    // Configuration du routage statique (n0 et n2 pointent vers n1)
+    Ptr<Ipv4> ipv4N1 = n1->GetObject<Ipv4>();
+    ipv4N1->SetAttribute("IpForward", BooleanValue(true)); // Activer le forwarding sur le routeur
+
+    Ipv4StaticRoutingHelper staticRoutingHelper;
+    Ptr<Ipv4StaticRouting> staticRoutingN0 = staticRoutingHelper.GetStaticRouting(n0->GetObject<Ipv4>());
+    staticRoutingN0->AddNetworkRouteTo(Ipv4Address("10.1.2.0"), Ipv4Mask("255.255.255.0"), interfaces1.GetAddress(1), 1);
+
+    Ptr<Ipv4StaticRouting> staticRoutingN2 = staticRoutingHelper.GetStaticRouting(n2->GetObject<Ipv4>());
+    staticRoutingN2->AddNetworkRouteTo(Ipv4Address("10.1.1.0"), Ipv4Mask("255.255.255.0"), interfaces2.GetAddress(0), 1);
+
+
+    // 2. Implémentation du système de files d'attente prioritaires (PfifoFastQueueDisc) (Question 2)
+    TrafficControlHelper tc;
+    
+    // Configurer le PfifoFastQueueDisc (Fast Queue with 3 internal queues/bands)
+    // Nous allons définir les tailles de file d'attente pour chaque bande.
+    // Band 0: High Priority (VoIP) - Band 1: Default - Band 2: Low Priority (Data)
+    // PfifoFastQueueDisc utilise le champ ToS/DSCP de l'IP pour le mapping (0 -> Band 2, 46 -> Band 0)
+    tc.Set
+    RootQueueDisc
+    ("ns3::PfifoFastQueueDisc", 
+     "MaxPackets", StringValue("100"), // Taille totale de la file d'attente
+     "Bands", UintegerValue(3)
+    );
+
+    // Installer la discipline de file d'attente sur l'interface de sortie du routeur (n1 <-> n2)
+    Ptr<NetDevice> egressDevice = link2Devices.Get(0); // n1's interface facing n2
+    tc.Install(egressDevice);
+
+
+    // 3. Création des applications de trafic (Question 1)
+
+    // Serveur Udp sur n2
+    UdpServerHelper udpServer(9); // Port 9 pour VoIP
+    UdpServerHelper udpServerData(10); // Port 10 pour Data
+
+    ApplicationContainer serverApps = udpServer.Install(n2);
+    serverApps.Add(udpServerData.Install(n2));
+    serverApps.Start(Seconds(1.0));
+    serverApps.Stop(Seconds(11.0));
+
+
+    // Client 1: Trafic VoIP (Class 1) - Priorité élevée (DSCP 46 - EF)
+    // Paquets 160 bytes @ 20ms intervale (50 pkts/s) -> 64 kbps (faible débit, sensible à la latence)
+    Ptr<OnOffHelper> onOffVoIP = CreateObject<OnOffHelper>(
+        "ns3::UdpClient", 
+        AddressValue(InetSocketAddress(interfaces2.GetAddress(1), 9)) // Destination: n2 port 9
+    );
+    onOffVoIP->SetAttribute("OnTime", StringValue("ns3::ConstantRandomVariable[Constant=1]"));
+    onOffVoIP->SetAttribute("OffTime", StringValue("ns3::ConstantRandomVariable[Constant=0]"));
+    onOffVoIP->SetAttribute("PacketSize", UintegerValue(160));
+    onOffVoIP->SetAttribute("DataRate", DataRateValue(DataRate("64kbps")));
+    // MARQUAGE DSCP: 46 (Expedited Forwarding - Haute Priorité)
+    onOffVoIP->SetAttribute("DsField", UintegerValue(46)); 
+
+    ApplicationContainer clientVoIP = onOffVoIP->Install(n0);
+    clientVoIP.Start(Seconds(2.0));
+    clientVoIP.Stop(Seconds(11.0));
+
+
+    // Client 2: Trafic Data (Class 2) - Basse priorité (DSCP 0 - Best Effort)
+    // Paquets 1500 bytes. Débit de 10 Mbps (pour saturer le lien 1 Mbps)
+    Ptr<OnOffHelper> onOffData = CreateObject<OnOffHelper>(
+        "ns3::UdpClient", 
+        AddressValue(InetSocketAddress(interfaces2.GetAddress(1), 10)) // Destination: n2 port 10
+    );
+    onOffData->SetAttribute("OnTime", StringValue("ns3::ConstantRandomVariable[Constant=1]"));
+    onOffData->SetAttribute("OffTime", StringValue("ns3::ConstantRandomVariable[Constant=0]"));
+    onOffData->SetAttribute("PacketSize", UintegerValue(1500));
+    // DÉBIT ÉLEVÉ pour créer une congestion (Question 4)
+    onOffData->SetAttribute("DataRate", DataRateValue(DataRate("10Mbps")));
+    // MARQUAGE DSCP: 0 (Best Effort - Basse Priorité)
+    onOffData->SetAttribute("DsField", UintegerValue(0)); 
+
+    ApplicationContainer clientData = onOffData->Install(n0);
+    clientData.Start(Seconds(2.0));
+    clientData.Stop(Seconds(11.0));
+
+    // 4. FlowMonitor pour la mesure de performance (Question 3)
+    FlowMonitorHelper flowMonitorHelper;
+    Ptr<FlowMonitor> flowMonitor = flowMonitorHelper.InstallAll();
+
+    // Configuration NetAnim
+    // MobilityHelper mobility;
+    // mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
+    // mobility.Install(nodes);
+    // ... (Définir les positions si nécessaire, omis pour la concision)
+    AnimationInterface anim("scratch/qos-mixed-traffic.xml");
+    anim.UpdateNodeDescription(n0, "HQ/VoIP+Data");
+    anim.UpdateNodeDescription(n1, "Router/QoS");
+    anim.UpdateNodeDescription(n2, "DC/Server");
+
+    // Lancer la simulation
+    Simulator::Stop(Seconds(12.0));
+    Simulator::Run();
+
+    // Appeler l'analyse après l'exécution
+    Ptr<Ipv4FlowClassifier> classifier = DynamicCast<Ipv4FlowClassifier>(flowMonitorHelper.GetClassifier());
+    FlowMonitorAnalysis(flowMonitor, classifier);
+
+    Simulator::Destroy();
+
+    std::cout << "\n=== Simulation QoS Complète ===\n";
+    std::cout << "Le trafic VoIP (DSCP 46, Port 9) devrait avoir une latence plus faible et moins de pertes.\n";
+    std::cout << "Le trafic Data (DSCP 0, Port 10) devrait subir une latence et des pertes plus élevées.\n";
+
+    return 0;
+}
+
